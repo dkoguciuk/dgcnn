@@ -24,64 +24,98 @@ def get_model(point_cloud, is_training, bn_decay=None):
   end_points = {}
   k = 20
 
+  # pairwise distance of the points in the point cloud
   adj_matrix = tf_util.pairwise_distance(point_cloud)
+
+  # get indices of k nearest neighbors
   nn_idx = tf_util.knn(adj_matrix, k=k)
+
+  # edge feature
   edge_feature = tf_util.get_edge_feature(point_cloud, nn_idx=nn_idx, k=k)
 
+  # transform net 1
   with tf.variable_scope('transform_net1') as sc:
     transform = input_transform_net(edge_feature, is_training, bn_decay, K=3)
 
+  # point cloud transf
   point_cloud_transformed = tf.matmul(point_cloud, transform)
+
+  # pairwise distance of the points in the point cloud
   adj_matrix = tf_util.pairwise_distance(point_cloud_transformed)
-  nn_idx = tf_util.knn(adj_matrix, k=k)
-  edge_feature = tf_util.get_edge_feature(point_cloud_transformed, nn_idx=nn_idx, k=k)
 
-  net = tf_util.conv2d(edge_feature, 64, [1,1],
-                       padding='VALID', stride=[1,1],
-                       bn=True, is_training=is_training,
-                       scope='dgcnn1', bn_decay=bn_decay)
+  # get indices of k nearest neighbors
+  nn_idx = tf_util.knn(adj_matrix, k=k)
+
+  # I've got neighbors indices and subregion index (0-7)
+  net = tf_util.conv2d_reg(point_cloud_transformed, nn_idx,
+#  edge_feature = tf_util.get_edge_feature(point_cloud_transformed, nn_idx=nn_idx, k=k)
+#  net = tf_util.conv2d(edge_feature,
+                           64, [1,1], padding='VALID', stride=[1,1],
+                           bn=True, is_training=is_training,
+                           scope='dgcnn1_reg', bn_decay=bn_decay)
+
+  # Maxpool
+  #net = reduce.tf_max(net, axis=-2, keep_dims=False)
   net = tf.reduce_max(net, axis=-2, keep_dims=True)
-  net1 = net
+  net_1 = net
+
+  #############################################################################
+  # 2nd block
+  #############################################################################
 
   adj_matrix = tf_util.pairwise_distance(net)
   nn_idx = tf_util.knn(adj_matrix, k=k)
-  edge_feature = tf_util.get_edge_feature(net, nn_idx=nn_idx, k=k)
-
-  net = tf_util.conv2d(edge_feature, 64, [1,1],
-                       padding='VALID', stride=[1,1],
-                       bn=True, is_training=is_training,
-                       scope='dgcnn2', bn_decay=bn_decay)
+#  net = tf_util.conv2d_reg(net, nn_idx, 64, [1,1],
+  net = tf_util.conv2d(net, 64, [1,1],
+                           padding='VALID', stride=[1,1],
+                           bn=True, is_training=is_training,
+                           scope='dgcnn2', bn_decay=bn_decay)
+  #net = tf.reduce_max(net, axis=-2, keep_dims=False)
   net = tf.reduce_max(net, axis=-2, keep_dims=True)
-  net2 = net
- 
+  net_2 = net
+
+  #############################################################################
+  # 3rd block
+  ############################################################################# 
+
   adj_matrix = tf_util.pairwise_distance(net)
   nn_idx = tf_util.knn(adj_matrix, k=k)
-  edge_feature = tf_util.get_edge_feature(net, nn_idx=nn_idx, k=k)  
-
-  net = tf_util.conv2d(edge_feature, 64, [1,1],
+  #net = tf_util.conv2d_reg(net, nn_idx, 64, [1,1],
+  net = tf_util.conv2d(net, 64, [1,1],
                        padding='VALID', stride=[1,1],
                        bn=True, is_training=is_training,
                        scope='dgcnn3', bn_decay=bn_decay)
+  #net = tf.reduce_max(net, axis=-2, keep_dims=False)
   net = tf.reduce_max(net, axis=-2, keep_dims=True)
-  net3 = net
+  net_3 = net
+
+  #############################################################################
+  # 4rd block
+  ############################################################################# 
 
   adj_matrix = tf_util.pairwise_distance(net)
   nn_idx = tf_util.knn(adj_matrix, k=k)
-  edge_feature = tf_util.get_edge_feature(net, nn_idx=nn_idx, k=k)  
-  
-  net = tf_util.conv2d(edge_feature, 128, [1,1],
-                       padding='VALID', stride=[1,1],
-                       bn=True, is_training=is_training,
-                       scope='dgcnn4', bn_decay=bn_decay)
+  #net = tf_util.conv2d_reg(net, nn_idx, 128, [1,1],
+  net = tf_util.conv2d(net, 128, [1,1],
+                           padding='VALID', stride=[1,1],
+                           bn=True, is_training=is_training,
+                           scope='dgcnn4', bn_decay=bn_decay)
+  #net = tf.reduce_max(net, axis=-2, keep_dims=False)
   net = tf.reduce_max(net, axis=-2, keep_dims=True)
-  net4 = net
+  net_4 = net
 
-  net = tf_util.conv2d(tf.concat([net1, net2, net3, net4], axis=-1), 1024, [1, 1], 
+  #############################################################################
+  # aggregate block
+  ############################################################################# 
+
+  #net = tf.expand_dims(tf.concat([net_1, net_2, net_3, net_4], axis=-1), axis=-2)
+  net = tf.concat([net_1, net_2, net_3, net_4], axis=-1)
+  net = tf_util.conv2d(net,
+                       1024, [1, 1], 
                        padding='VALID', stride=[1,1],
                        bn=True, is_training=is_training,
                        scope='agg', bn_decay=bn_decay)
- 
-  net = tf.reduce_max(net, axis=1, keep_dims=True) 
+  net = tf.reduce_max(net, axis=1, keep_dims=False) 
 
   # MLP on global point cloud vector
   net = tf.reshape(net, [batch_size, -1]) 
@@ -109,7 +143,7 @@ def get_loss(pred, label, end_points):
 
 if __name__=='__main__':
   batch_size = 2
-  num_pt = 124
+  num_pt = 1024
   pos_dim = 3
 
   input_feed = np.random.rand(batch_size, num_pt, pos_dim)
@@ -133,9 +167,6 @@ if __name__=='__main__':
       res1, res2 = sess.run([pos, ftr], feed_dict=feed_dict)
       print res1.shape
       print res1
-
-      print res2.shape
-      print res2
 
 
 

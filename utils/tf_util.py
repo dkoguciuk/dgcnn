@@ -173,6 +173,124 @@ def conv2d(inputs,
       return outputs
 
 
+def conv2d_reg(point_cloud, nn_idx,
+              num_output_channels,
+              kernel_size,
+              scope,
+              stride=[1, 1],
+              padding='SAME',
+              use_xavier=True,
+              stddev=1e-3,
+              weight_decay=0.0,
+              activation_fn=tf.nn.relu,
+              bn=False,
+              bn_decay=None,
+              is_training=None,
+              is_dist=False):
+  """ 2D convolution with non-linear operation.
+
+  Args:
+    point_cloud: 3-D tensor variable BxHxW
+    nn_idx: 3-D tensor variable BxHxH
+    nn_reg: 4-D tensor variable BxHxK
+    num_output_channels: int
+    kernel_size: a list of 2 ints
+    scope: string
+    stride: a list of 2 ints
+    padding: 'SAME' or 'VALID'
+    use_xavier: bool, use xavier_initializer if true
+    stddev: float, stddev for truncated_normal init
+    weight_decay: float
+    activation_fn: function
+    bn: bool, whether to use batch norm
+    bn_decay: float or float tensor variable in [0,1]
+    is_training: bool Tensor variable
+
+  Returns:
+    Variable tensor
+  """
+  with tf.variable_scope(scope) as sc:
+
+      # Sizes
+      point_cloud_shape = point_cloud.get_shape()
+      batch_size = point_cloud_shape[0].value				# 32
+      num_points = point_cloud_shape[1].value				# 1024
+      num_dims = point_cloud_shape[2].value				# 3
+      kernel_h, kernel_w = kernel_size					# [1, 1]
+      num_in_channels = 2*num_dims					# 2*3 = 6
+      kernel_shape = [kernel_h, kernel_w,				# [1, 1, 6, 64]
+                      num_in_channels, num_output_channels]
+      k = 20
+      stride_h, stride_w = stride
+
+      # Neighbor - query
+      point_cloud_central = tf.expand_dims(point_cloud, axis=-2)
+      point_cloud_central = tf.tile(point_cloud_central, [1, 1, k, 1])
+
+      # idx_ = [ 0  1024  2048  3072  4096  5120  6144  7168  8192  9216 10240 11264 etc.
+      idx_ = tf.range(batch_size) * num_points
+      idx_ = tf.reshape(idx_, [batch_size, 1, 1]) 
+
+      # flat point pointcloud
+      point_cloud_flat = tf.reshape(point_cloud, [-1, num_dims])
+      point_cloud_neighbors = tf.gather(point_cloud_flat, nn_idx+idx_)
+      point_cloud_diff = point_cloud_neighbors - point_cloud_central
+      edge_feature = tf.concat([point_cloud_central, point_cloud_neighbors-point_cloud_central], axis=-1)
+
+      # XYZ
+      elems_x = tf.reshape(point_cloud_diff[..., 0], [-1])
+      point_cloud_diff_x = tf.map_fn(lambda x: tf.greater(x,0), elems_x, dtype=tf.bool)
+      elems_y = tf.reshape(point_cloud_diff[..., 1], [-1])
+      point_cloud_diff_y = tf.map_fn(lambda x: tf.greater(x,0), elems_y, dtype=tf.bool)
+      elems_z = tf.reshape(point_cloud_diff[..., 2], [-1])
+      point_cloud_diff_z = tf.map_fn(lambda x: tf.greater(x,0), elems_z, dtype=tf.bool)  
+
+      # final subregion
+      point_cloud_diff_x = tf.cast(point_cloud_diff_x, dtype=tf.int64)
+      point_cloud_diff_y = tf.cast(point_cloud_diff_y, dtype=tf.int64)
+      point_cloud_diff_z = tf.cast(point_cloud_diff_z, dtype=tf.int64)
+      elems = tf.stack((point_cloud_diff_x, point_cloud_diff_y, point_cloud_diff_z), axis=-1)
+      point_cloud_subregions = tf.map_fn(lambda x: x[0]*4 + x[1]*2 + x[2], elems, dtype=tf.int64)
+      point_cloud_subregions = tf.reshape(point_cloud_subregions, (batch_size, num_points, k))
+  
+      # output
+      outputs = tf.zeros((batch_size, num_points, k, num_output_channels), dtype=tf.float32)
+
+      # for loop
+      for i in range(8):
+
+        # kernel
+        kernel_i = _variable_with_weight_decay('weights_' + str(i),
+                                               shape=kernel_shape,
+                                               use_xavier=use_xavier,
+                                               stddev=stddev,
+                                               wd=weight_decay)
+
+        # Take indices where nn_reg is i
+        mask_i = tf.map_fn(lambda x: tf.equal(x, i), point_cloud_subregions, dtype=tf.bool)
+        mask_i = tf.cast(mask_i, tf.float32)
+      
+        # Convolve 
+        output_i = tf.nn.conv2d(edge_feature, kernel_i, [1, stride_h, stride_w, 1], padding=padding)
+        biases_i = _variable_on_cpu('biases_' + str(i), [num_output_channels], tf.constant_initializer(0.0))
+        output_i = tf.nn.bias_add(output_i, biases_i)
+
+        #Apply mask
+        output_i = tf.multiply(output_i, tf.expand_dims(mask_i, axis=-1))
+        outputs = outputs + output_i
+
+      # bn decay
+      if bn:
+        outputs = batch_norm_for_conv2d(outputs, is_training,
+                                        bn_decay=bn_decay, scope='bn', is_dist=is_dist)
+
+      # Activation
+      if activation_fn is not None:
+        outputs = activation_fn(outputs)
+
+      # Return
+      return outputs
+
 def conv2d_transpose(inputs,
                      num_output_channels,
                      kernel_size,
@@ -670,6 +788,52 @@ def knn(adj_matrix, k=20):
   _, nn_idx = tf.nn.top_k(neg_adj, k=k)
   return nn_idx
 
+def knn_subregions(point_cloud, nn_idx):
+  """ Get subregions indices for each neigbor
+  Args:
+    point_cloud: tensor (batch_size, num_points, num_dims)
+    nearest neighbors: tensor (batch_size, num_points, k)
+
+  Returns:
+    nearest neighbors subregions: (batch_size, num_points, k)
+  """
+
+  # sizes
+  point_cloud_shape = point_cloud.get_shape()
+  batch_size = point_cloud_shape[0].value
+  num_points = point_cloud_shape[1].value
+  num_dims = point_cloud_shape[2].value
+  k = nn_idx.get_shape()[2].value
+
+  # idx_ = [ 0  1024  2048  3072  4096  5120  6144  7168  8192  9216 10240 11264 etc.
+  idx_ = tf.range(batch_size) * num_points
+  idx_ = tf.reshape(idx_, [batch_size, 1, 1])
+
+  # flat and neighbors
+  point_cloud_flat = tf.reshape(point_cloud, [-1, num_dims])
+  point_cloud_neighbors = tf.gather(point_cloud_flat, nn_idx+idx_)  
+
+  # Neighbor - query
+  point_cloud_central = tf.expand_dims(point_cloud, axis=-2)
+  point_cloud_central = tf.tile(point_cloud_central, [1, 1, k, 1])
+  point_cloud_diff = point_cloud_neighbors - point_cloud_central
+
+  # XYZ
+  elems_x = tf.reshape(point_cloud_diff[..., 0], [-1])
+  point_cloud_diff_x = tf.map_fn(lambda x: tf.greater(x,0), elems_x, dtype=tf.bool)
+  elems_y = tf.reshape(point_cloud_diff[..., 1], [-1])
+  point_cloud_diff_y = tf.map_fn(lambda x: tf.greater(x,0), elems_y, dtype=tf.bool)
+  elems_z = tf.reshape(point_cloud_diff[..., 2], [-1])
+  point_cloud_diff_z = tf.map_fn(lambda x: tf.greater(x,0), elems_z, dtype=tf.bool)  
+
+  # final subregion
+  point_cloud_diff_x = tf.cast(point_cloud_diff_x, dtype=tf.int64)
+  point_cloud_diff_y = tf.cast(point_cloud_diff_y, dtype=tf.int64)
+  point_cloud_diff_z = tf.cast(point_cloud_diff_z, dtype=tf.int64)
+  elems = tf.stack((point_cloud_diff_x, point_cloud_diff_y, point_cloud_diff_z), axis=-1)
+  point_cloud_subregions = tf.map_fn(lambda x: x[0]*4 + x[1]*2 + x[2], elems, dtype=tf.int64)
+  point_cloud_subregions = tf.reshape(point_cloud_subregions, (batch_size, num_points, k))
+  return point_cloud_subregions
 
 def get_edge_feature(point_cloud, nn_idx, k=20):
   """Construct edge feature for each point
@@ -693,6 +857,7 @@ def get_edge_feature(point_cloud, nn_idx, k=20):
   num_points = point_cloud_shape[1].value
   num_dims = point_cloud_shape[2].value
 
+  # idx_ = [ 0  1024  2048  3072  4096  5120  6144  7168  8192  9216 10240 11264 etc.
   idx_ = tf.range(batch_size) * num_points
   idx_ = tf.reshape(idx_, [batch_size, 1, 1]) 
 
