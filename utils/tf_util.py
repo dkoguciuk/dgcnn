@@ -239,20 +239,21 @@ def conv2d_reg(point_cloud, nn_idx,
 
       # XYZ
       elems_x = tf.reshape(point_cloud_diff[..., 0], [-1])
-      point_cloud_diff_x = tf.map_fn(lambda x: tf.greater(x,0), elems_x, dtype=tf.bool)
+      elems_1 = tf.ones((elems_x.get_shape()), dtype=tf.int64)
+      elems_0 = tf.zeros((elems_x.get_shape()), dtype=tf.int64)
+      point_cloud_diff_x = tf.where(elems_x > 0, elems_1, elems_0)
       elems_y = tf.reshape(point_cloud_diff[..., 1], [-1])
-      point_cloud_diff_y = tf.map_fn(lambda x: tf.greater(x,0), elems_y, dtype=tf.bool)
+      point_cloud_diff_y = tf.where(elems_y > 0, elems_1, elems_0)
       elems_z = tf.reshape(point_cloud_diff[..., 2], [-1])
-      point_cloud_diff_z = tf.map_fn(lambda x: tf.greater(x,0), elems_z, dtype=tf.bool)  
+      point_cloud_diff_z = tf.where(elems_z > 0, elems_1, elems_0)
 
       # final subregion
-      point_cloud_diff_x = tf.cast(point_cloud_diff_x, dtype=tf.int64)
-      point_cloud_diff_y = tf.cast(point_cloud_diff_y, dtype=tf.int64)
-      point_cloud_diff_z = tf.cast(point_cloud_diff_z, dtype=tf.int64)
-      elems = tf.stack((point_cloud_diff_x, point_cloud_diff_y, point_cloud_diff_z), axis=-1)
-      point_cloud_subregions = tf.map_fn(lambda x: x[0]*4 + x[1]*2 + x[2], elems, dtype=tf.int64)
+      x_m = tf.constant(4, tf.int64)
+      y_m = tf.constant(2, tf.int64)
+      z_m = tf.constant(1, tf.int64)
+      point_cloud_subregions = point_cloud_diff_x*x_m + point_cloud_diff_y*y_m + point_cloud_diff_z*z_m
       point_cloud_subregions = tf.reshape(point_cloud_subregions, (batch_size, num_points, k))
-  
+
       # output
       outputs = tf.zeros((batch_size, num_points, k, num_output_channels), dtype=tf.float32)
 
