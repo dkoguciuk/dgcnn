@@ -254,10 +254,8 @@ def conv2d_reg(point_cloud, nn_idx,
       point_cloud_subregions = point_cloud_diff_x*x_m + point_cloud_diff_y*y_m + point_cloud_diff_z*z_m
       point_cloud_subregions = tf.reshape(point_cloud_subregions, (batch_size, num_points, k))
 
-      # output
-      outputs = tf.zeros((batch_size, num_points, k, num_output_channels), dtype=tf.float32)
-
       # for loop
+      outputs = []
       for i in range(8):
 
         # kernel
@@ -278,7 +276,11 @@ def conv2d_reg(point_cloud, nn_idx,
 
         #Apply mask
         output_i = tf.multiply(output_i, tf.expand_dims(mask_i, axis=-1))
-        outputs = outputs + output_i
+        output_i = tf.reduce_max(output_i, axis=-2, keep_dims=False)
+        outputs.append(output_i)
+
+      outputs = tf.stack(outputs, axis=-2)
+      outputs = tf.reduce_sum(outputs, axis=-2, keep_dims=True)
 
       # bn decay
       if bn:
