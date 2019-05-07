@@ -49,8 +49,8 @@ def get_model(point_cloud, is_training, num_classes, bn_decay=None):
   # I've got neighbors indices and subregion index (0-7)
   edge_feature = tf_util.get_edge_feature(point_cloud_transformed, nn_idx=nn_idx, k=k)
 
-  net = tf_util.conv2d_reg(point_cloud_transformed, nn_idx,
-#  net = tf_util.conv2d(edge_feature,
+#  net = tf_util.conv2d_reg(point_cloud_transformed, nn_idx,
+  net = tf_util.conv2d(edge_feature,
                            64, [1,1], padding='VALID', stride=[1,1],
                            bn=True, is_training=is_training,
                            scope='dgcnn1', bn_decay=bn_decay)
@@ -138,7 +138,7 @@ def get_model(point_cloud, is_training, num_classes, bn_decay=None):
 #  print (np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
 #  exit()
 
-  return net, end_points
+  return net, end_points, net_1
 
 
 def get_loss(pred, label, end_points, num_classes):
@@ -174,8 +174,8 @@ if __name__=='__main__':
       sess.run(tf.global_variables_initializer())
       feed_dict = {input_pl: input_feed, label_pl: label_feed}
       res1, res2 = sess.run([pos, ftr], feed_dict=feed_dict)
-      print res1.shape
-      print res1
+      print(res1.shape)
+      print(res1)
 
 
 

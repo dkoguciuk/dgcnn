@@ -5,6 +5,11 @@ import h5py
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
+try:
+  xrange
+except NameError:
+  xrange = range
+
 # Download dataset for point cloud classification
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 if not os.path.exists(DATA_DIR):
