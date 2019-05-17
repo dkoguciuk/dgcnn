@@ -167,7 +167,7 @@ if __name__=='__main__':
 
   with tf.Graph().as_default():
     input_pl, label_pl = placeholder_inputs(batch_size, num_pt)
-    pos, ftr = get_model(input_pl, tf.constant(True))
+    pos, ftr, net_1 = get_model(input_pl, tf.constant(True), num_classes=40)
     # loss = get_loss(logits, label_pl, None)
 
     with tf.Session() as sess:
